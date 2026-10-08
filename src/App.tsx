@@ -6,6 +6,7 @@ import { EncryptionWorkbench } from './components/EncryptionWorkbench.tsx';
 import { VectorDbInfra } from './components/VectorDbInfra.tsx';
 import { RepoEvaluation } from './components/RepoEvaluation.tsx';
 import { CodeExplorer } from './components/CodeExplorer.tsx';
+import { TokenizedChat } from './components/TokenizedChat.tsx';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<string>('auth');
@@ -98,6 +99,8 @@ export default function App() {
           {activeTab === 'security' && <EncryptionWorkbench />}
 
           {activeTab === 'vectordb' && <VectorDbInfra />}
+
+          {activeTab === 'chat' && <TokenizedChat />}
 
           {activeTab === 'repos' && <RepoEvaluation role={role} />}
 

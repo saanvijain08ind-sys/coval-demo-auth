@@ -72,6 +72,17 @@ export const Header: React.FC<HeaderProps> = ({
             Vector DB
           </button>
           <button
+            onClick={() => setActiveTab('chat')}
+            className={`px-3 py-1.5 text-xs sm:text-sm font-medium rounded-md transition-colors whitespace-nowrap flex items-center gap-1.5 ${
+              activeTab === 'chat'
+                ? 'bg-slate-800 text-white shadow-sm'
+                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900'
+            }`}
+          >
+            <span className="w-1.5 h-1.5 rounded-full bg-indigo-400"></span>
+            <span>Paid Chat</span>
+          </button>
+          <button
             onClick={() => setActiveTab('repos')}
             className={`px-3 py-1.5 text-xs sm:text-sm font-medium rounded-md transition-colors whitespace-nowrap ${
               activeTab === 'repos'

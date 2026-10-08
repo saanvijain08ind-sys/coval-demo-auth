@@ -409,6 +409,78 @@ def insert_chunks_to_supabase(chunks, embeddings, user_id: str, repo_id: str, su
     supabase_client.table("document_chunks").insert(records).execute()
     return len(records)`
     },
+    'rag/chat_router.py': {
+      path: 'coval-backend/rag/chat_router.py',
+      name: 'chat_router.py',
+      language: 'python',
+      badge: 'Tokenized Chat & Wallet Deduction',
+      content: `import os
+import asyncio
+from fastapi import APIRouter, HTTPException, Header, status
+from pydantic import BaseModel, Field
+from auth.database import supabase
+from rag.indexer import EmbeddingClient
+
+router = APIRouter(prefix="/chat", tags=["tokenized-rag-chat"])
+DEFAULT_QUERY_TOKEN_COST = 5
+
+class ChatQueryRequest(BaseModel):
+    repository_id: str = Field(..., description="Target repository ID")
+    query: str = Field(..., description="User query")
+    top_k: int = Field(default=5)
+
+async def deduct_wallet_tokens_atomic(user_id: str, amount: int):
+    # Atomically checks and deducts balance in Supabase token_wallets
+    def _execute():
+        rpc_res = supabase.rpc("deduct_wallet_tokens", {
+            "p_user_id": user_id,
+            "p_amount": amount
+        }).execute()
+        return rpc_res.data[0] if rpc_res.data else {"success": False, "remaining_balance": 0}
+    return await asyncio.to_thread(_execute)
+
+@router.post("/query")
+async def query_codebase_assistant(
+    body: ChatQueryRequest,
+    x_user_id: str = Header(..., alias="X-User-Id")
+):
+    # 1. Atomic Wallet Balance Check & Deduction
+    deduction = await deduct_wallet_tokens_atomic(x_user_id, DEFAULT_QUERY_TOKEN_COST)
+    if not deduction.get("success"):
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail={
+                "error": "Payment Required",
+                "message": f"Insufficient token balance ({deduction.get('remaining_balance')} available, {DEFAULT_QUERY_TOKEN_COST} required).",
+                "required_tokens": DEFAULT_QUERY_TOKEN_COST
+            }
+        )
+
+    # 2. Context Retrieval via pgvector strictly scoped by user_id and repo_id
+    embedder = EmbeddingClient()
+    query_vector = (await asyncio.to_thread(embedder.embed_batch, [body.query]))[0]
+
+    def _fetch_chunks():
+        return supabase.rpc("match_code_chunks", {
+            "query_embedding": query_vector,
+            "match_threshold": 0.45,
+            "match_count": body.top_k,
+            "filter_user_id": x_user_id,
+            "filter_repo_id": body.repository_id
+        }).execute().data or []
+
+    chunks = await asyncio.to_thread(_fetch_chunks)
+
+    # 3. LLM Response Generation with Evidence Grounding
+    answer = f"Analysis based on [{chunks[0]['file_path']}:{chunks[0]['start_line']}-{chunks[0]['end_line']}]:..."
+
+    return {
+        "answer": answer,
+        "citations": [{"file_path": c["file_path"], "lines": f"{c['start_line']}-{c['end_line']}"} for c in chunks],
+        "tokens_deducted": DEFAULT_QUERY_TOKEN_COST,
+        "remaining_wallet_balance": deduction.get("remaining_balance")
+    }`
+    },
     'indexer.py': {
       path: 'coval-backend/indexer.py',
       name: 'indexer.py (CLI)',
@@ -535,6 +607,17 @@ if __name__ == "__main__":
                   >
                     <FileCode className="w-3.5 h-3.5 text-emerald-400" />
                     <span>indexer.py</span>
+                  </button>
+                  <button
+                    onClick={() => setSelectedFile('rag/chat_router.py')}
+                    className={`w-full flex items-center gap-1.5 px-2 py-1 rounded text-left transition-colors ${
+                      selectedFile === 'rag/chat_router.py'
+                        ? 'bg-indigo-600 text-white'
+                        : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900'
+                    }`}
+                  >
+                    <FileCode className="w-3.5 h-3.5 text-indigo-400" />
+                    <span>chat_router.py</span>
                   </button>
                 </div>
               </div>
