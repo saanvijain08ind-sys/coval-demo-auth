@@ -1,0 +1,6 @@
+{
+  "name": "Coval - Agentic RAG Code Evaluation Platform",
+  "description": "Backend infrastructure, vector database, and privacy/encryption auth layer for Coval Agentic RAG evaluation platform.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
