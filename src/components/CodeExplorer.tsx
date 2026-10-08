@@ -304,7 +304,138 @@ cryptography>=42.0.0
 argon2-cffi>=23.1.0
 python-dotenv>=1.0.1
 pydantic>=2.6.0
-httpx>=0.27.0`
+httpx>=0.27.0
+openai>=1.14.0`
+    },
+    'rag/indexer.py': {
+      path: 'coval-backend/rag/indexer.py',
+      name: 'indexer.py',
+      language: 'python',
+      badge: 'Function-Aware Semantic Chunking',
+      content: `import os
+import re
+import math
+import logging
+from dataclasses import dataclass
+from typing import List, Dict, Any, Optional
+from pathlib import Path
+from dotenv import load_dotenv
+
+load_dotenv()
+logger = logging.getLogger("coval.indexer")
+
+IGNORED_DIRS = {"node_modules", "dist", "build", ".git", ".venv", "__pycache__", ".next", "vendor"}
+IGNORED_EXTENSIONS = {".png", ".jpg", ".svg", ".zip", ".tar", ".pyc", ".map", ".lock"}
+
+@dataclass
+class CodeChunk:
+    file_path: str
+    language: str
+    symbol_name: str
+    chunk_type: str
+    start_line: int
+    end_line: int
+    content: str
+    token_estimate: int
+
+# 1. Directory Traversal & Filter (Redacting Secrets)
+def walk_and_filter_repository(root_dir: str):
+    root_path = Path(root_dir).resolve()
+    valid_files = []
+    for path in root_path.rglob("*"):
+        if not path.is_file(): continue
+        if any(part in IGNORED_DIRS for part in path.parts): continue
+        if path.suffix in IGNORED_EXTENSIONS: continue
+        if any(p in path.name.lower() for p in [".env", ".pem", "id_rsa"]): continue
+        valid_files.append({"relative_path": str(path.relative_to(root_path)), "absolute_path": str(path), "language": "python"})
+    return valid_files
+
+# 2. Function-Aware Code Chunking
+PYTHON_BOUNDARY = re.compile(r"^(async\s+def\s+|def\s+|class\s+)([a-zA-Z0-9_]+)")
+
+def chunk_code_file(relative_path: str, content: str, language: str, max_chunk_tokens: int = 800):
+    lines = content.splitlines()
+    chunks = []
+    current_lines = []
+    chunk_start = 1
+    current_symbol = "module_header"
+    current_type = "module_header"
+
+    for i, line in enumerate(lines):
+        line_num = i + 1
+        leading_spaces = len(line) - len(line.lstrip(" "))
+        if leading_spaces <= 4:
+            m = PYTHON_BOUNDARY.match(line.strip())
+            if m and len(current_lines) > 5:
+                chunks.append(CodeChunk(
+                    file_path=relative_path, language=language, symbol_name=current_symbol,
+                    chunk_type=current_type, start_line=chunk_start, end_line=line_num - 1,
+                    content="\\n".join(current_lines).strip(), token_estimate=len("\\n".join(current_lines)) // 4
+                ))
+                current_lines = []
+                chunk_start = line_num
+                current_symbol = m.group(2)
+                current_type = "class" if m.group(1).startswith("class") else "function"
+        current_lines.append(line)
+
+    if current_lines:
+        chunks.append(CodeChunk(
+            file_path=relative_path, language=language, symbol_name=current_symbol,
+            chunk_type=current_type, start_line=chunk_start, end_line=len(lines),
+            content="\\n".join(current_lines).strip(), token_estimate=len("\\n".join(current_lines)) // 4
+        ))
+    return chunks
+
+# 3. Insert Chunks with Strict Tenant Isolation (user_id + repo_id)
+def insert_chunks_to_supabase(chunks, embeddings, user_id: str, repo_id: str, supabase_client):
+    if not user_id or not repo_id:
+        raise ValueError("CRITICAL SECURITY: user_id and repo_id are mandatory to prevent cross-tenant queries.")
+    
+    records = []
+    for chunk, emb in zip(chunks, embeddings):
+        records.append({
+            "user_id": user_id.strip(),
+            "repo_id": repo_id.strip(),
+            "file_path": chunk.file_path,
+            "symbol_name": chunk.symbol_name,
+            "chunk_type": chunk.chunk_type,
+            "start_line": chunk.start_line,
+            "end_line": chunk.end_line,
+            "content": chunk.content,
+            "token_estimate": chunk.token_estimate,
+            "embedding": emb,
+            "metadata": {"user_id": user_id, "repo_id": repo_id, "file_path": chunk.file_path}
+        })
+    supabase_client.table("document_chunks").insert(records).execute()
+    return len(records)`
+    },
+    'indexer.py': {
+      path: 'coval-backend/indexer.py',
+      name: 'indexer.py (CLI)',
+      language: 'python',
+      badge: 'CLI Entrypoint',
+      content: `#!/usr/bin/env python3
+import argparse
+from auth.database import supabase
+from rag.indexer import index_codebase_to_pgvector
+
+def main():
+    parser = argparse.ArgumentParser(description="Index codebase into Supabase pgvector.")
+    parser.add_argument("--dir", required=True, help="Path to local repository clone")
+    parser.add_argument("--user-id", required=True, help="Owner user_id (Tenant Isolation Lock)")
+    parser.add_argument("--repo-id", required=True, help="Repository ID")
+    args = parser.parse_args()
+
+    result = index_codebase_to_pgvector(
+        repo_directory=args.dir,
+        user_id=args.user_id,
+        repo_id=args.repo_id,
+        supabase_client=supabase
+    )
+    print("Ingestion Succeeded:", result)
+
+if __name__ == "__main__":
+    main()`
     }
   };
 
@@ -387,8 +518,29 @@ httpx>=0.27.0`
                 )}
               </div>
 
+              {/* RAG Folder */}
+              <div>
+                <div className="w-full flex items-center gap-1.5 px-2 py-1 text-slate-300 rounded text-left font-semibold">
+                  <Folder className="w-3.5 h-3.5 text-indigo-400" />
+                  <span>rag</span>
+                </div>
+                <div className="pl-6 space-y-0.5">
+                  <button
+                    onClick={() => setSelectedFile('rag/indexer.py')}
+                    className={`w-full flex items-center gap-1.5 px-2 py-1 rounded text-left transition-colors ${
+                      selectedFile === 'rag/indexer.py'
+                        ? 'bg-indigo-600 text-white'
+                        : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900'
+                    }`}
+                  >
+                    <FileCode className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>indexer.py</span>
+                  </button>
+                </div>
+              </div>
+
               {/* Root Files */}
-              {['.env', 'main.py', 'requirements.txt'].map((path) => (
+              {['indexer.py', '.env', 'main.py', 'requirements.txt'].map((path) => (
                 <button
                   key={path}
                   onClick={() => setSelectedFile(path)}

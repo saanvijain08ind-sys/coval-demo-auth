@@ -511,6 +511,236 @@ app.post('/api/benchmark/crypto-concurrency', async (req, res) => {
   });
 });
 
+// --- RAG VECTOR DATABASE & CHUNKING SIMULATION ROUTES ---
+
+// In-memory pgvector mock store
+interface StoredVectorChunk {
+  id: string;
+  user_id: string;
+  repo_id: string;
+  file_path: string;
+  language: string;
+  symbol_name: string;
+  chunk_type: string;
+  start_line: number;
+  end_line: number;
+  content: string;
+  token_estimate: number;
+  embedding: number[];
+  created_at: string;
+}
+
+const vectorStore: StoredVectorChunk[] = [
+  {
+    id: 'chk_001',
+    user_id: 'usr_coval_01',
+    repo_id: 'repo_01',
+    file_path: 'auth/security.py',
+    language: 'python',
+    symbol_name: 'encrypt_payload',
+    chunk_type: 'function',
+    start_line: 45,
+    end_line: 72,
+    content: 'def encrypt_payload(data: Union[Dict[str, Any], str, bytes], associated_data: Optional[bytes] = None) -> str:\n    cipher = get_cipher()\n    nonce = os.urandom(12)\n    ciphertext_and_tag = cipher.encrypt(nonce, plaintext_bytes, associated_data)\n    return base64.b64encode(nonce + ciphertext_and_tag).decode("utf-8")',
+    token_estimate: 88,
+    embedding: Array.from({ length: 32 }, (_, i) => Math.sin(i * 0.2)),
+    created_at: new Date().toISOString()
+  },
+  {
+    id: 'chk_002',
+    user_id: 'usr_coval_01',
+    repo_id: 'repo_01',
+    file_path: 'auth/database.py',
+    language: 'python',
+    symbol_name: 'supabase_client',
+    chunk_type: 'module_header',
+    start_line: 1,
+    end_line: 18,
+    content: 'import os\nfrom supabase import create_client, Client\nsupabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)',
+    token_estimate: 35,
+    embedding: Array.from({ length: 32 }, (_, i) => Math.cos(i * 0.3)),
+    created_at: new Date().toISOString()
+  },
+  {
+    id: 'chk_003',
+    user_id: 'usr_coval_01',
+    repo_id: 'repo_02',
+    file_path: 'indexer.py',
+    language: 'python',
+    symbol_name: 'chunk_code_file',
+    chunk_type: 'function',
+    start_line: 85,
+    end_line: 140,
+    content: 'def chunk_code_file(relative_path: str, content: str, language: str):\n    # Splits code into semantic units without breaking functions in half\n    lines = content.splitlines()\n    # ... preserves function boundaries',
+    token_estimate: 110,
+    embedding: Array.from({ length: 32 }, (_, i) => Math.sin(i * 0.5)),
+    created_at: new Date().toISOString()
+  },
+  {
+    id: 'chk_004',
+    user_id: 'usr_external_other',
+    repo_id: 'repo_secret_external',
+    file_path: 'private/core.py',
+    language: 'python',
+    symbol_name: 'proprietary_algorithm',
+    chunk_type: 'function',
+    start_line: 10,
+    end_line: 45,
+    content: 'def proprietary_algorithm():\n    # Foreign tenant confidential code\n    return secret_key',
+    token_estimate: 60,
+    embedding: Array.from({ length: 32 }, (_, i) => Math.sin(i * 0.2)),
+    created_at: new Date().toISOString()
+  }
+];
+
+// POST /api/rag/simulate-chunk
+app.post('/api/rag/simulate-chunk', (req, res) => {
+  const { file_path, content, language, user_id, repo_id } = req.body;
+  if (!content) return res.status(400).json({ error: 'content is required' });
+  if (!user_id || !repo_id) {
+    return res.status(400).json({ error: 'CRITICAL SECURITY: user_id and repo_id are mandatory for tenant isolation.' });
+  }
+
+  const lines = content.split('\n');
+  const chunks: Array<{
+    file_path: string;
+    language: string;
+    symbol_name: string;
+    chunk_type: string;
+    start_line: number;
+    end_line: number;
+    content: string;
+    token_estimate: number;
+    user_id: string;
+    repo_id: string;
+  }> = [];
+
+  let currentLines: string[] = [];
+  let chunkStartLine = 1;
+  let currentSymbol = 'module_header';
+  let currentChunkType = 'module_header';
+
+  const pyBoundary = /^(async\s+def\s+|def\s+|class\s+)([a-zA-Z0-9_]+)/;
+  const jsBoundary = /^(export\s+)?(async\s+)?(function\s+([a-zA-Z0-9_]+)|class\s+([a-zA-Z0-9_]+)|const\s+([a-zA-Z0-9_]+)\s*=\s*)/;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const stripped = line.trim();
+    let isBoundary = false;
+    let symName = '';
+    let symType = 'function';
+
+    if (line.search(/\S/) <= 4) {
+      if (language === 'python') {
+        const m = pyBoundary.exec(stripped);
+        if (m) {
+          isBoundary = true;
+          symType = m[1].includes('class') ? 'class' : 'function';
+          symName = m[2];
+        }
+      } else {
+        const m = jsBoundary.exec(stripped);
+        if (m) {
+          isBoundary = true;
+          symType = stripped.includes('class') ? 'class' : 'function';
+          symName = m[4] || m[5] || m[6] || 'symbol';
+        }
+      }
+    }
+
+    if (isBoundary && currentLines.length > 5) {
+      const text = currentLines.join('\n').trim();
+      if (text) {
+        chunks.push({
+          file_path: file_path || 'source.py',
+          language: language || 'python',
+          symbol_name: currentSymbol,
+          chunk_type: currentChunkType,
+          start_line: chunkStartLine,
+          end_line: i,
+          content: text,
+          token_estimate: Math.ceil(text.length / 4),
+          user_id,
+          repo_id
+        });
+      }
+      currentLines = [];
+      chunkStartLine = i + 1;
+      currentSymbol = symName;
+      currentChunkType = symType;
+    }
+
+    currentLines.push(line);
+  }
+
+  if (currentLines.length > 0) {
+    const text = currentLines.join('\n').trim();
+    if (text) {
+      chunks.push({
+        file_path: file_path || 'source.py',
+        language: language || 'python',
+        symbol_name: currentSymbol,
+        chunk_type: currentChunkType,
+        start_line: chunkStartLine,
+        end_line: lines.length,
+        content: text,
+        token_estimate: Math.ceil(text.length / 4),
+        user_id,
+        repo_id
+      });
+    }
+  }
+
+  return res.json({
+    file_path,
+    language,
+    total_lines: lines.length,
+    chunks_count: chunks.length,
+    chunks,
+    security: {
+      tenant_user_id: user_id,
+      repo_id,
+      tenant_isolation_tagged: true
+    }
+  });
+});
+
+// POST /api/rag/search
+app.post('/api/rag/search', (req, res) => {
+  const { query, user_id, repo_id } = req.body;
+  if (!query || !user_id || !repo_id) {
+    return res.status(400).json({ error: 'query, user_id, and repo_id are mandatory.' });
+  }
+
+  // Strict tenant filtering: only match chunks where user_id matches AND repo_id matches
+  const matched = vectorStore.filter(c => c.user_id === user_id && c.repo_id === repo_id);
+
+  // Compute mock cosine similarity
+  const results = matched.map(chunk => ({
+    id: chunk.id,
+    file_path: chunk.file_path,
+    symbol_name: chunk.symbol_name,
+    chunk_type: chunk.chunk_type,
+    lines: `${chunk.start_line}-${chunk.end_line}`,
+    content: chunk.content,
+    user_id: chunk.user_id,
+    repo_id: chunk.repo_id,
+    similarity: (0.78 + Math.random() * 0.18).toFixed(3)
+  }));
+
+  // Confirm foreign tenant exclusion
+  const foreignExcludedCount = vectorStore.filter(c => c.user_id !== user_id || c.repo_id !== repo_id).length;
+
+  return res.json({
+    query,
+    user_id_scope: user_id,
+    repo_id_scope: repo_id,
+    results_found: results.length,
+    foreign_chunks_blocked_by_tenant_filter: foreignExcludedCount,
+    results
+  });
+});
+
 // --- CORE REPOS & JOBS ROUTES (Sections 4.4, 6, 7 of Coval Spec) ---
 
 app.get('/api/repos', (req, res) => {
