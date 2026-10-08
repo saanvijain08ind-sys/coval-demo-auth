@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from auth.router import router as auth_router
+from auth.router import router as auth_router, vault_router
 
 app = FastAPI(
     title="Coval Agentic RAG Platform - Backend API",
@@ -18,6 +18,7 @@ app.add_middleware(
 )
 
 app.include_router(auth_router)
+app.include_router(vault_router)
 
 @app.get("/")
 async def root():

@@ -20,11 +20,209 @@ interface FileEntry {
 }
 
 export const CodeExplorer: React.FC = () => {
-  const [selectedFile, setSelectedFile] = useState<string>('auth/router.py');
+  const [selectedFile, setSelectedFile] = useState<string>('auth/security.py');
   const [copied, setCopied] = useState(false);
   const [authFolderOpen, setAuthFolderOpen] = useState(true);
 
   const files: Record<string, FileEntry> = {
+    'auth/security.py': {
+      path: 'coval-backend/auth/security.py',
+      name: 'security.py',
+      language: 'python',
+      badge: 'AES-256-GCM + Non-Blocking',
+      content: `import os
+import json
+import base64
+import asyncio
+from typing import Dict, Any, Optional, Union
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from argon2 import PasswordHasher
+from dotenv import load_dotenv
+
+# 1. Securely load master environment configuration
+load_dotenv()
+
+ph = PasswordHasher()
+
+# 2. Master Key Initialization & Validation (32 bytes / 256 bits)
+RAW_HEX_KEY = os.getenv("AES_MASTER_KEY") or os.getenv("AES_SECRET_KEY", "")
+
+def get_master_cipher() -> AESGCM:
+    """
+    Validates and pre-instantiates the AESGCM cipher engine.
+    Ensures the master key is exactly 256 bits (32 bytes, 64 hex characters).
+    """
+    if not RAW_HEX_KEY:
+        raise ValueError("CRITICAL: AES_MASTER_KEY is not defined in the environment (.env).")
+    
+    clean_hex = RAW_HEX_KEY.strip()
+    if len(clean_hex) != 64:
+        raise ValueError(
+            f"CRITICAL: AES_MASTER_KEY must be a 64-character hex string (32 bytes). "
+            f"Current length is {len(clean_hex)}."
+        )
+    
+    try:
+        key_bytes = bytes.fromhex(clean_hex)
+        return AESGCM(key_bytes)
+    except ValueError as exc:
+        raise ValueError("CRITICAL: Failed to decode AES_MASTER_KEY hex bytes.") from exc
+
+_cipher_instance: Optional[AESGCM] = None
+
+def get_cipher() -> AESGCM:
+    global _cipher_instance
+    if _cipher_instance is None:
+        _cipher_instance = get_master_cipher()
+    return _cipher_instance
+
+# 3. Synchronous AES-256-GCM Primitives
+def encrypt_payload(
+    data: Union[Dict[str, Any], str, bytes],
+    associated_data: Optional[bytes] = None
+) -> str:
+    """
+    Encrypts arbitrary payload using authenticated AES-256-GCM.
+    - Nonce: 12 bytes (96 bits) CSPRNG generated via os.urandom.
+    - Tag: 16 bytes (128 bits) appended automatically by AESGCM.
+    - Associated Data (AAD): Optional bytes to cryptographically bind ciphertext to a context.
+    - Output: Base64 string containing [12-byte Nonce + Ciphertext + 16-byte Tag].
+    """
+    cipher = get_cipher()
+    nonce = os.urandom(12)
+    
+    if isinstance(data, dict):
+        plaintext_bytes = json.dumps(data, separators=(",", ":")).encode("utf-8")
+    elif isinstance(data, str):
+        plaintext_bytes = data.encode("utf-8")
+    elif isinstance(data, bytes):
+        plaintext_bytes = data
+    else:
+        plaintext_bytes = json.dumps(data).encode("utf-8")
+    
+    ciphertext_and_tag = cipher.encrypt(nonce, plaintext_bytes, associated_data)
+    packed = nonce + ciphertext_and_tag
+    return base64.b64encode(packed).decode("utf-8")
+
+def decrypt_payload(
+    encrypted_base64: str,
+    associated_data: Optional[bytes] = None,
+    as_json: bool = True
+) -> Any:
+    """
+    Decrypts Base64 string produced by encrypt_payload.
+    Verifies 128-bit authentication tag; if tampered, raises InvalidTag.
+    """
+    cipher = get_cipher()
+    raw = base64.b64decode(encrypted_base64.encode("utf-8"))
+    
+    if len(raw) < 28:
+        raise ValueError("Ciphertext format is invalid; payload too short.")
+    
+    nonce = raw[:12]
+    ciphertext_and_tag = raw[12:]
+    
+    decrypted_bytes = cipher.decrypt(nonce, ciphertext_and_tag, associated_data)
+    decoded_str = decrypted_bytes.decode("utf-8")
+    
+    if as_json:
+        try:
+            return json.loads(decoded_str)
+        except json.JSONDecodeError:
+            return decoded_str
+    return decoded_str
+
+# 4. Non-Blocking Async Wrappers for 100+ Concurrent Requests
+async def async_encrypt_payload(
+    data: Union[Dict[str, Any], str, bytes],
+    associated_data: Optional[bytes] = None
+) -> str:
+    """
+    Offloads CPU-bound cryptographic work to Python's default ThreadPoolExecutor
+    via asyncio.to_thread, preventing event loop blocking under heavy concurrent loads.
+    """
+    return await asyncio.to_thread(encrypt_payload, data, associated_data)
+
+async def async_decrypt_payload(
+    encrypted_base64: str,
+    associated_data: Optional[bytes] = None,
+    as_json: bool = True
+) -> Any:
+    return await asyncio.to_thread(decrypt_payload, encrypted_base64, associated_data, as_json)`
+    },
+    'auth/router.py': {
+      path: 'coval-backend/auth/router.py',
+      name: 'router.py',
+      language: 'python',
+      badge: 'FastAPI Vault Routes',
+      content: `from fastapi import APIRouter, HTTPException, Header
+from pydantic import BaseModel, Field
+from auth.database import supabase
+from auth.security import async_encrypt_payload, async_decrypt_payload
+
+vault_router = APIRouter(prefix="/vault", tags=["encrypted-vault"])
+
+class StoreRepoMetadataRequest(BaseModel):
+    repository_id: str = Field(..., description="Target repository UUID")
+    repo_name: str = Field(..., description="e.g. coval-org/rag-orchestrator")
+    access_token: str = Field(..., description="GitHub OAuth / PAT token")
+    environment_variables: dict = Field(default_factory=dict)
+    webhook_secret: str = None
+
+# 1. Asynchronous Route: Save Scrambled Data to Supabase
+@vault_router.post("/repository-metadata")
+async def store_encrypted_repository_metadata(
+    body: StoreRepoMetadataRequest,
+    x_user_id: str = Header("usr_default_admin", alias="X-User-Id")
+):
+    sensitive_bundle = {
+        "repo_name": body.repo_name,
+        "access_token": body.access_token,
+        "environment_variables": body.environment_variables,
+        "webhook_secret": body.webhook_secret
+    }
+    
+    # AAD binds ciphertext to the authenticated user ID
+    aad = x_user_id.encode("utf-8")
+    
+    # Non-blocking encryption (runs in worker thread)
+    scrambled_base64 = await async_encrypt_payload(sensitive_bundle, associated_data=aad)
+    
+    # Save scrambled string to database
+    supabase.table("repositories").upsert({
+        "id": body.repository_id,
+        "name": body.repo_name,
+        "metadata_encrypted": scrambled_base64,
+        "owner_user_id": x_user_id
+    }).execute()
+
+    return {
+        "status": "scrambled_and_persisted",
+        "repository_id": body.repository_id,
+        "cipher": "AES-256-GCM"
+    }
+
+# 2. Asynchronous Route: Fetch & Decrypt by Authorized User
+@vault_router.get("/repository-metadata/{repository_id}")
+async def fetch_and_decrypt_repository_metadata(
+    repository_id: str,
+    x_user_id: str = Header("usr_default_admin", alias="X-User-Id")
+):
+    query = supabase.table("repositories").select("metadata_encrypted, owner_user_id").eq("id", repository_id).execute()
+    if not query.data:
+        raise HTTPException(status_code=404, detail="Repository not found.")
+    
+    scrambled_ciphertext = query.data[0]["metadata_encrypted"]
+    aad = x_user_id.encode("utf-8")
+    
+    # Non-blocking decryption and authentication tag check
+    try:
+        decrypted_bundle = await async_decrypt_payload(scrambled_ciphertext, associated_data=aad, as_json=True)
+    except Exception as exc:
+        raise HTTPException(status_code=403, detail="Decryption failed. Unauthorized user or tampered data.")
+
+    return decrypted_bundle`
+    },
     'auth/database.py': {
       path: 'coval-backend/auth/database.py',
       name: 'database.py',
@@ -40,99 +238,12 @@ SUPABASE_URL: str = os.getenv("SUPABASE_URL", "")
 SUPABASE_KEY: str = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
 
 if not SUPABASE_URL or not SUPABASE_KEY:
+    SUPABASE_KEY = os.getenv("SUPABASE_ANON_KEY", "")
+
+if not SUPABASE_URL or not SUPABASE_KEY:
     raise ValueError("Missing Supabase credentials in .env file.")
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)`
-    },
-    'auth/router.py': {
-      path: 'coval-backend/auth/router.py',
-      name: 'router.py',
-      language: 'python',
-      badge: 'OAuth Routes',
-      content: `import os
-from fastapi import APIRouter
-from fastapi.responses import RedirectResponse
-from auth.database import supabase
-
-router = APIRouter(prefix="/auth", tags=["auth"])
-
-@router.get("/login/x")
-async def login_with_x():
-    """Initiates X (Twitter) OAuth flow via Supabase."""
-    redirect_target = os.getenv("FRONTEND_URL", "http://localhost:8000")
-    res = supabase.auth.sign_in_with_oauth({
-        "provider": "x",
-        "options": {"redirect_to": f"{redirect_target}/dashboard"}
-    })
-    return RedirectResponse(url=res.url)
-
-@router.get("/login/google")
-async def login_with_google():
-    """Initiates Google OAuth flow via Supabase."""
-    redirect_target = os.getenv("FRONTEND_URL", "http://localhost:8000")
-    res = supabase.auth.sign_in_with_oauth({
-        "provider": "google",
-        "options": {"redirect_to": f"{redirect_target}/dashboard"}
-    })
-    return RedirectResponse(url=res.url)
-
-@router.get("/login/github")
-async def login_with_github():
-    """Initiates GitHub OAuth flow via Supabase."""
-    redirect_target = os.getenv("FRONTEND_URL", "http://localhost:8000")
-    res = supabase.auth.sign_in_with_oauth({
-        "provider": "github",
-        "options": {"redirect_to": f"{redirect_target}/dashboard"}
-    })
-    return RedirectResponse(url=res.url)`
-    },
-    'auth/security.py': {
-      path: 'coval-backend/auth/security.py',
-      name: 'security.py',
-      language: 'python',
-      badge: 'AES-256-GCM + Argon2id',
-      content: `import os
-import json
-import base64
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from argon2 import PasswordHasher
-from dotenv import load_dotenv
-
-load_dotenv()
-
-ph = PasswordHasher()
-
-HEX_KEY = os.getenv("AES_SECRET_KEY", "")
-aesgcm = AESGCM(bytes.fromhex(HEX_KEY)) if HEX_KEY else None
-
-def hash_token(token: str) -> str:
-    """Hashes a refresh token using Argon2id."""
-    return ph.hash(token)
-
-def verify_token_hash(hash_val: str, token: str) -> bool:
-    """Verifies a refresh token against its Argon2 hash."""
-    try:
-        return ph.verify(hash_val, token)
-    except Exception:
-        return False
-
-def encrypt_tokens(payload: dict) -> str:
-    """Encrypts token payload dictionary using AES-256-GCM."""
-    if not aesgcm:
-        raise ValueError("AES_SECRET_KEY is not configured.")
-    nonce = os.urandom(12)
-    data = json.dumps(payload).encode("utf-8")
-    ciphertext = aesgcm.encrypt(nonce, data, None)
-    return base64.b64encode(nonce + ciphertext).decode("utf-8")
-
-def decrypt_tokens(encrypted_str: str) -> dict:
-    """Decrypts AES-256-GCM encrypted token payload."""
-    if not aesgcm:
-        raise ValueError("AES_SECRET_KEY is not configured.")
-    raw = base64.b64decode(encrypted_str.encode("utf-8"))
-    nonce, ciphertext = raw[:12], raw[12:]
-    decrypted_data = aesgcm.decrypt(nonce, ciphertext, None)
-    return json.loads(decrypted_data.decode("utf-8"))`
     },
     'main.py': {
       path: 'coval-backend/main.py',
@@ -140,15 +251,29 @@ def decrypt_tokens(encrypted_str: str) -> dict:
       language: 'python',
       badge: 'FastAPI Entry',
       content: `from fastapi import FastAPI
-from auth.router import router as auth_router
+from fastapi.middleware.cors import CORSMiddleware
+from auth.router import router as auth_router, vault_router
 
-app = FastAPI(title="Coval Auth Service")
+app = FastAPI(
+    title="Coval Agentic RAG Platform - Backend API",
+    description="Sub-Team 3: Infrastructure, pgvector Database & Privacy/Encryption Auth Layer",
+    version="1.0.0"
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 app.include_router(auth_router)
+app.include_router(vault_router)
 
 @app.get("/")
 async def root():
-    return {"status": "online", "service": "Coval Auth"}`
+    return {"status": "online", "service": "Coval Auth & Security Service"}`
     },
     '.env': {
       path: 'coval-backend/.env',
@@ -160,8 +285,10 @@ SUPABASE_URL=https://cdfltsogriaaedxtibqh.supabase.co
 SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 SUPABASE_SERVICE_ROLE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 
-# Encryption & App Settings
+# Encryption Master Key (Sub-Team 3 Master Lock - 32 bytes / 64 hex chars)
+AES_MASTER_KEY=0a1eb4e52eb69b4a01b59a11643ce7ac0bf2b681ed2e538b3fe11f2e4787e4cc
 AES_SECRET_KEY=0a1eb4e52eb69b4a01b59a11643ce7ac0bf2b681ed2e538b3fe11f2e4787e4cc
+
 FRONTEND_URL=https://demo-coval.vercel.app
 BASE_URL=http://localhost:8000`
     },
@@ -203,9 +330,9 @@ httpx>=0.27.0`
             FastAPI Auth & Security Codebase
           </h1>
           <p className="text-sm sm:text-base text-slate-300 leading-relaxed">
-            The Python backend codebase mirrored directly from your repository tree.
-            Ready for local execution with Uvicorn, testing with pytest, and seamless expansion
-            with future sub-team tasks.
+            The Python backend codebase mirrored directly from your repository tree, upgraded with
+            AES-256-GCM non-blocking async execution, <code className="text-indigo-300 font-mono">AES_MASTER_KEY</code> validation,
+            and repository metadata vault routes.
           </p>
         </div>
       </div>
@@ -242,7 +369,7 @@ httpx>=0.27.0`
 
                 {authFolderOpen && (
                   <div className="pl-6 space-y-0.5">
-                    {['auth/database.py', 'auth/router.py', 'auth/security.py'].map((path) => (
+                    {['auth/security.py', 'auth/router.py', 'auth/database.py'].map((path) => (
                       <button
                         key={path}
                         onClick={() => setSelectedFile(path)}
