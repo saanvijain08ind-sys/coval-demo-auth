@@ -245,6 +245,45 @@ if not SUPABASE_URL or not SUPABASE_KEY:
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)`
     },
+    'lib/supabase.ts': {
+      path: 'src/lib/supabase.ts',
+      name: 'supabase.ts (Client SDK)',
+      language: 'typescript',
+      badge: '@supabase/supabase-js OAuth',
+      content: `import { createClient } from '@supabase/supabase-js';
+
+// Safe environment fallback for client-side Supabase client
+const SUPABASE_URL =
+  (typeof import.meta !== 'undefined' && import.meta.env?.VITE_SUPABASE_URL) ||
+  'https://cdfltsogriaaedxtibqh.supabase.co';
+
+const SUPABASE_ANON_KEY =
+  (typeof import.meta !== 'undefined' && import.meta.env?.VITE_SUPABASE_ANON_KEY) ||
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.e30.dummy-anon-key';
+
+export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+/**
+ * Official Supabase OAuth Initiation Pattern:
+ * 1. Does NOT route to /rest/v1/auth/v1/authorize (avoids 404 & malformed PostgREST proxy)
+ * 2. Uses \`\${SUPABASE_URL}/auth/v1/authorize\` under the hood
+ * 3. Automatically includes the required anon public API key header & params,
+ *    avoiding the "No API key found in request" error.
+ */
+export async function initiateOAuthLogin(provider: 'github' | 'google' | 'twitter') {
+  const { data, error } = await supabase.auth.signInWithOAuth({
+    provider: provider,
+    options: {
+      redirectTo: 'http://localhost:3000/dashboard'
+    }
+  });
+  
+  if (error) {
+    throw error;
+  }
+  return data;
+}`
+    },
     'main.py': {
       path: 'coval-backend/main.py',
       name: 'main.py',
@@ -903,7 +942,7 @@ if __name__ == "__main__":
               </div>
 
               {/* Root Files */}
-              {['db_pool.py', 'indexer.py', '.env', 'main.py', 'requirements.txt'].map((path) => (
+              {['db_pool.py', 'indexer.py', '.env', 'main.py', 'requirements.txt', 'lib/supabase.ts'].map((path) => (
                 <button
                   key={path}
                   onClick={() => setSelectedFile(path)}

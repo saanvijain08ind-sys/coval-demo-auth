@@ -16,17 +16,21 @@ const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 app.use(express.json());
 
 // Supabase Configuration from Environment
-const SUPABASE_URL = process.env.SUPABASE_URL || 'https://cdfltsogriaaedxtibqh.supabase.co';
+// CRITICAL: Ensure SUPABASE_URL is the project base URL (e.g. https://xxx.supabase.co)
+// Do NOT append /rest/v1 or route OAuth to /rest/v1/auth/v1/authorize.
+const rawSupabaseUrl = process.env.SUPABASE_URL || 'https://cdfltsogriaaedxtibqh.supabase.co';
+const SUPABASE_URL = rawSupabaseUrl.replace(/\/rest\/v1\/?$/, '').replace(/\/+$/, '');
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || '';
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
 const AES_SECRET_KEY = process.env.AES_SECRET_KEY || '0a1eb4e52eb69b4a01b59a11643ce7ac0bf2b681ed2e538b3fe11f2e4787e4cc';
-const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:3000';
+const rawFrontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+const FRONTEND_URL = rawFrontendUrl.replace(/\/dashboard\/?$/, '').replace(/\/+$/, '');
 const CODEVAL_ADMINS = (process.env.CODEVAL_ADMINS || 'admin,saanvijain08,saanvijain08.ind@gmail.com,coval-lead')
   .split(',')
   .map(s => s.trim().toLowerCase());
 
-// Initialize Supabase Client
-const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY || SUPABASE_ANON_KEY);
+// Initialize Supabase Client with clean project base URL
+const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY || SUPABASE_SERVICE_ROLE_KEY);
 
 // --- Sub-Team 3 Cryptographic Layer: AES-256-GCM ---
 function getAesKeyBuffer(): Buffer {
@@ -203,8 +207,8 @@ const jobs: Record<string, {
 
 // 1. GET /auth/login/:provider
 app.get('/auth/login/:provider', async (req, res) => {
-  const provider = req.params.provider as 'github' | 'google' | 'x';
-  const redirectTarget = `${FRONTEND_URL}/auth/callback`;
+  const provider = (req.params.provider === 'x' ? 'twitter' : req.params.provider) as 'github' | 'google' | 'twitter';
+  const redirectTarget = `${FRONTEND_URL}/dashboard`;
 
   try {
     const { data, error } = await supabase.auth.signInWithOAuth({
@@ -215,13 +219,13 @@ app.get('/auth/login/:provider', async (req, res) => {
       }
     });
 
-    if (error) {
-      // Fallback redirect URL generator if supabase responds with configuration notice
-      const fallbackUrl = `https://cdfltsogriaaedxtibqh.supabase.co/auth/v1/authorize?provider=${provider}&redirect_to=${encodeURIComponent(redirectTarget)}`;
+    if (error || !data?.url) {
+      // Correct Supabase Auth endpoint: ${SUPABASE_URL}/auth/v1/authorize (never /rest/v1/auth/v1/authorize)
+      const authorizeUrl = `${SUPABASE_URL}/auth/v1/authorize?provider=${provider}&redirect_to=${encodeURIComponent(redirectTarget)}`;
       return res.json({
-        url: fallbackUrl,
+        url: authorizeUrl,
         provider,
-        notice: 'Supabase OAuth URL generated'
+        notice: 'Supabase OAuth URL generated via ${SUPABASE_URL}/auth/v1/authorize'
       });
     }
 
@@ -230,11 +234,12 @@ app.get('/auth/login/:provider', async (req, res) => {
     }
     return res.redirect(data.url);
   } catch (err: any) {
-    const fallbackUrl = `https://cdfltsogriaaedxtibqh.supabase.co/auth/v1/authorize?provider=${provider}&redirect_to=${encodeURIComponent(redirectTarget)}`;
+    // Correct Supabase Auth endpoint: ${SUPABASE_URL}/auth/v1/authorize
+    const authorizeUrl = `${SUPABASE_URL}/auth/v1/authorize?provider=${provider}&redirect_to=${encodeURIComponent(redirectTarget)}`;
     if (req.query.mode === 'json') {
-      return res.json({ url: fallbackUrl, provider });
+      return res.json({ url: authorizeUrl, provider });
     }
-    return res.redirect(fallbackUrl);
+    return res.redirect(authorizeUrl);
   }
 });
 

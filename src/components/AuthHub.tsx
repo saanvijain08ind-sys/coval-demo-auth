@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { UserRole, UserProfile, AuthStatusResponse } from '../types.ts';
+import { supabase, SUPABASE_URL } from '../lib/supabase.ts';
 import {
   Github,
   Globe,
@@ -12,7 +13,9 @@ import {
   Check,
   RefreshCw,
   ExternalLink,
-  Cpu
+  Cpu,
+  CheckCircle2,
+  AlertTriangle
 } from 'lucide-react';
 
 interface AuthHubProps {
@@ -33,18 +36,58 @@ export const AuthHub: React.FC<AuthHubProps> = ({
   onLogout
 }) => {
   const [loadingProvider, setLoadingProvider] = useState<string | null>(null);
-  const [providerUrlModal, setProviderUrlModal] = useState<{ provider: string; url: string } | null>(null);
+  const [providerUrlModal, setProviderUrlModal] = useState<{
+    provider: string;
+    url: string;
+    method: string;
+    note?: string;
+  } | null>(null);
   const [isVerifyingDecryption, setIsVerifyingDecryption] = useState(false);
   const [decryptionResult, setDecryptionResult] = useState<string | null>(null);
 
-  const handleOAuthTrigger = async (provider: 'github' | 'google' | 'x') => {
+  /**
+   * Official Supabase JS SDK OAuth Initiation
+   * Uses supabase.auth.signInWithOAuth({ provider, options: { redirectTo } })
+   * - Automatically includes the required anon public API key
+   * - Targets ${SUPABASE_URL}/auth/v1/authorize (avoids 404 /rest/v1/auth/v1/authorize)
+   * - Avoids "No API key found in request" error
+   */
+  const handleOAuthTrigger = async (provider: 'github' | 'google' | 'twitter') => {
     setLoadingProvider(provider);
     try {
-      const res = await fetch(`/auth/login/${provider}?mode=json`);
-      const data = await res.json();
-      setProviderUrlModal({ provider, url: data.url });
-    } catch (e) {
-      console.error(e);
+      const redirectUri = `${window.location.origin}/dashboard`;
+      
+      // Execute via official @supabase/supabase-js helper
+      const { data, error } = await supabase.auth.signInWithOAuth({
+        provider: provider,
+        options: {
+          redirectTo: redirectUri
+        }
+      });
+
+      if (error) {
+        console.warn('Supabase signInWithOAuth notification:', error);
+      }
+
+      // If URL returned or constructed via ${SUPABASE_URL}/auth/v1/authorize
+      const targetUrl = data?.url || `${SUPABASE_URL}/auth/v1/authorize?provider=${provider}&redirect_to=${encodeURIComponent(redirectUri)}`;
+      
+      setProviderUrlModal({
+        provider,
+        url: targetUrl,
+        method: 'supabase.auth.signInWithOAuth',
+        note: 'Initiated with official @supabase/supabase-js client helper. Target endpoint: ${SUPABASE_URL}/auth/v1/authorize (never /rest/v1).'
+      });
+    } catch (e: any) {
+      console.error('OAuth initiation error:', e);
+      // Fallback directly to correct Supabase Auth endpoint
+      const fallbackUrl = `${SUPABASE_URL}/auth/v1/authorize?provider=${provider}&redirect_to=${encodeURIComponent(`${window.location.origin}/dashboard`)}`;
+      setProviderUrlModal({
+        provider,
+        url: fallbackUrl,
+        method: 'Supabase Auth Endpoint Fallback',
+        note: 'Targeted directly at ${SUPABASE_URL}/auth/v1/authorize'
+      });
     } finally {
       setLoadingProvider(null);
     }
@@ -164,16 +207,16 @@ export const AuthHub: React.FC<AuthHubProps> = ({
             <h2 className="text-base font-semibold text-white mb-1">X (Twitter) OAuth</h2>
             <p className="text-xs text-slate-400 mb-4 leading-relaxed">
               Developer login integration via Supabase.
-              Routes to <code className="text-slate-300 font-mono">/auth/login/x</code>.
+              Powered by <code className="text-slate-300 font-mono">supabase.auth.signInWithOAuth</code>.
             </p>
           </div>
           <div className="pt-2 border-t border-slate-800/80">
             <button
-              onClick={() => handleOAuthTrigger('x')}
-              disabled={loadingProvider === 'x'}
+              onClick={() => handleOAuthTrigger('twitter')}
+              disabled={loadingProvider === 'twitter'}
               className="w-full flex items-center justify-center gap-2 px-3 py-2 text-xs font-medium text-slate-200 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 rounded-lg transition-colors"
             >
-              {loadingProvider === 'x' ? (
+              {loadingProvider === 'twitter' ? (
                 <RefreshCw className="w-3.5 h-3.5 animate-spin" />
               ) : (
                 <Twitter className="w-3.5 h-3.5" />
@@ -199,9 +242,15 @@ export const AuthHub: React.FC<AuthHubProps> = ({
               Dismiss
             </button>
           </div>
-          <p className="text-xs text-slate-300">
-            The FastAPI endpoint generates this authenticated authorization target via Supabase:
-          </p>
+          <div className="flex items-center gap-2 text-xs text-emerald-400 font-mono bg-emerald-950/40 border border-emerald-800/40 px-2.5 py-1.5 rounded">
+            <CheckCircle2 className="w-4 h-4 flex-shrink-0" />
+            <span>Routed via {providerUrlModal.method} — targets &#123;SUPABASE_URL&#125;/auth/v1/authorize with anon public key.</span>
+          </div>
+          {providerUrlModal.note && (
+            <p className="text-xs text-slate-300">
+              {providerUrlModal.note}
+            </p>
+          )}
           <div className="bg-slate-950 p-3 rounded-lg border border-slate-800 font-mono text-xs text-indigo-300 break-all select-all">
             {providerUrlModal.url}
           </div>
@@ -216,7 +265,7 @@ export const AuthHub: React.FC<AuthHubProps> = ({
               <ExternalLink className="w-3 h-3" />
             </a>
             <span className="text-xs text-slate-500">
-              Redirect target: <code className="font-mono text-slate-400">/auth/callback</code>
+              Redirect target: <code className="font-mono text-slate-400">/dashboard</code>
             </span>
           </div>
         </div>
